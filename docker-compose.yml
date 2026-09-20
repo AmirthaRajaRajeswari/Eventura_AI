@@ -1,0 +1,81 @@
+services:
+  # ── PostgreSQL with pgvector ─────────────────
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: eventura_db
+    environment:
+      POSTGRES_USER: eventura
+      POSTGRES_PASSWORD: eventura
+      POSTGRES_DB: eventura
+    ports:
+      - "5432:5432"
+    volumes:
+      - eventura_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eventura -d eventura"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Main backend ─────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: eventura_backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://eventura:eventura@db:5432/eventura
+      - SYNC_DATABASE_URL=postgresql+psycopg2://eventura:eventura@db:5432/eventura
+      - MOCK_VENDOR_BASE_URL=http://mock_vendors:8001
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - ./data:/data
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # ── Mock vendor marketplace ───────────────────
+  mock_vendors:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: eventura_mock_vendors
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://eventura:eventura@db:5432/eventura
+      - SYNC_DATABASE_URL=postgresql+psycopg2://eventura:eventura@db:5432/eventura
+    env_file:
+      - .env
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./backend:/app
+      - ./data:/data
+    command: uvicorn app.mock_vendors.server:app --host 0.0.0.0 --port 8001 --reload
+
+  # ── Frontend ─────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: eventura_frontend
+    depends_on:
+      - backend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - VITE_API_BASE_URL=http://localhost:8000
+      - VITE_MOCK_VENDOR_URL=http://localhost:8001
+
+volumes:
+  eventura_pgdata:
