@@ -1,6 +1,11 @@
 import { Routes, Route, Navigate } from "react-router-dom";
+
 import { Toaster } from "@/components/ui/toaster";
+
 import Layout from "@/components/layout/Layout";
+
+import LoginPage from "@/pages/LoginPage";
+import SignupPage from "@/pages/SignupPage";
 import NewEventPage from "@/pages/NewEventPage";
 import DashboardPage from "@/pages/DashboardPage";
 import AgentActivityPage from "@/pages/AgentActivityPage";
@@ -12,16 +17,44 @@ export default function App() {
   return (
     <>
       <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/signup" element={<SignupPage />} />
+
         <Route path="/" element={<Layout />}>
-          <Route index element={<Navigate to="/events/new" replace />} />
-          <Route path="events/new" element={<NewEventPage />} />
-          <Route path="events/:sessionId" element={<DashboardPage />} />
-          <Route path="events/:sessionId/activity" element={<AgentActivityPage />} />
-          <Route path="events/:sessionId/plan" element={<PlanReviewPage />} />
-          <Route path="events/:sessionId/disrupt" element={<DisruptionPage />} />
-          <Route path="eval" element={<EvalConsolePage />} />
+          <Route index element={<Navigate to="/login" replace />} />
+
+          <Route
+            path="events/new"
+            element={<NewEventPage />}
+          />
+
+          <Route
+            path="events/:sessionId"
+            element={<DashboardPage />}
+          />
+
+          <Route
+            path="events/:sessionId/activity"
+            element={<AgentActivityPage />}
+          />
+
+          <Route
+            path="events/:sessionId/plan"
+            element={<PlanReviewPage />}
+          />
+
+          <Route
+            path="events/:sessionId/disrupt"
+            element={<DisruptionPage />}
+          />
+
+          <Route
+            path="eval"
+            element={<EvalConsolePage />}
+          />
         </Route>
       </Routes>
+
       <Toaster />
     </>
   );

@@ -23,16 +23,16 @@ class Settings(BaseSettings):
 
     # ── Database ──────────────────────────────
     database_url: str = (
-        "postgresql+asyncpg://eventura:eventura@localhost:5432/eventura"
+        "postgresql+asyncpg://eventura:eventura@localhost:5433/eventura"
     )
     sync_database_url: str = (
-        "postgresql+psycopg2://eventura:eventura@localhost:5432/eventura"
+        "postgresql+psycopg2://eventura:eventura@localhost:5433/eventura"
     )
 
     # ── LLM ───────────────────────────────────
     llm_provider: Literal["gemini", "groq", "ollama"] = "gemini"
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-1.5-flash"
+    gemini_model: str = "gemini-2.5-flash"
 
     groq_api_key: str = ""
     groq_model: str = "llama3-70b-8192"

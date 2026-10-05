@@ -62,7 +62,7 @@ async def critic_node(state: EventState, config: RunnableConfig) -> dict:
 
     # ── 1. Budget check ───────────────────────────────────────────────────
     total_spent = budget_summary.get("spent", 0.0)
-    if total_spent > total_budget * 1.05:  # 5% tolerance
+    if total_spent > total_budget:
         issues.append(CriticIssue(
             type="budget_exceeded",
             severity="high",

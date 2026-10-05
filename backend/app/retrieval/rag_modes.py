@@ -160,6 +160,7 @@ async def retrieve_agentic(
     retrieval_round: int = 0,
     existing_evidence: list[Evidence] | None = None,
     llm: Any = None,
+    rejected_vendor_ids: list[str] | None = None,
 ) -> RetrievalResult:
     """
     Agentic RAG: dynamic source routing, query construction, and
@@ -181,6 +182,7 @@ async def retrieve_agentic(
     )
 
     existing_evidence = existing_evidence or []
+    rejected_vendor_ids = rejected_vendor_ids or []
     all_vendors: list[VendorResult] = []
     all_knowledge: list[dict] = []
     all_evidence: list[Evidence] = list(existing_evidence)
@@ -222,6 +224,7 @@ async def retrieve_agentic(
             min_capacity=min_cap,
             max_price=max_price,
             retrieval_round=retrieval_round,
+            rejected_vendor_ids=rejected_vendor_ids,
             limit=8,
         )
         all_vendors.extend(vendors)
@@ -285,6 +288,7 @@ async def retrieve_agentic(
                 date=date,
                 min_capacity=None,  # relax capacity constraint
                 max_price=None,     # relax price constraint
+                rejected_vendor_ids=rejected_vendor_ids,
                 retrieval_round=retrieval_round + 1,
                 limit=5,
             )

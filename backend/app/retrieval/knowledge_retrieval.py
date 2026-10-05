@@ -10,7 +10,8 @@ SQL retrieval handles vendor data; this handles unstructured knowledge.
 
 from __future__ import annotations
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text, bindparam
+from sqlalchemy.dialects.postgresql import ARRAY, VARCHAR
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import KnowledgeChunk
@@ -70,7 +71,7 @@ async def retrieve_knowledge(
     # Filter by event_type overlap if specified
     if event_types:
         # ANY overlap between chunk.event_types and provided list
-        type_filter = "AND (kc.event_types && ARRAY[:event_types]::varchar[])"
+        type_filter = "AND (kc.event_types && CAST(:event_types AS varchar[]))"
         params: dict = {
             "query_vec": str(query_embedding),
             "top_k": top_k,
@@ -91,13 +92,16 @@ async def retrieve_knowledge(
             kc.event_types,
             kc.chunk_index,
             kc.content,
-            1 - (kc.embedding <=> :query_vec::vector) AS score
+            1 - (kc.embedding <=> CAST(:query_vec AS vector)) AS score
         FROM knowledge_chunks kc
         WHERE kc.embedding IS NOT NULL
         {type_filter}
-        ORDER BY kc.embedding <=> :query_vec::vector
+        ORDER BY kc.embedding <=> CAST(:query_vec AS vector)        
         LIMIT :top_k
     """)
+    sql = sql.bindparams(
+    bindparam("event_types", type_=ARRAY(VARCHAR))
+    )
 
     result = await db.execute(sql, params)
     rows = result.fetchall()

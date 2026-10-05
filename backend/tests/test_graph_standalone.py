@@ -118,10 +118,13 @@ def test_feasibility_router_feasible():
 def test_feasibility_router_infeasible():
     from app.graph.graph import feasibility_router
     from app.graph.state import initial_state
-    from langgraph.graph import END
+
     s = initial_state("s1")
     s["feasibility"] = {"feasible": False}
-    assert feasibility_router(s) == END
+
+    # Initial feasibility is a screening step.
+    # Research should investigate missing evidence before final infeasibility.
+    assert feasibility_router(s) == "planner"
 
 
 def test_critic_router_passed():

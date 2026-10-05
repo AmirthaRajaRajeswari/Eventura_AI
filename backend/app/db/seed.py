@@ -29,13 +29,17 @@ logger = get_logger(__name__)
 
 DATA_DIR = Path(__file__).parents[3] / "data"
 
-
 async def clear_existing_data(session: AsyncSession) -> None:
-    """Remove existing seed data before re-seeding."""
+    """Remove existing synthetic data before re-seeding."""
     logger.info("Clearing existing synthetic data")
+
+    # Bookings reference vendors, so remove demo bookings first.
+    await session.execute(text("DELETE FROM bookings"))
+
     await session.execute(text("DELETE FROM vendor_availability"))
     await session.execute(text("DELETE FROM knowledge_chunks"))
     await session.execute(text("DELETE FROM vendors WHERE is_synthetic = true"))
+
     await session.commit()
 
 
@@ -101,7 +105,7 @@ async def seed_knowledge(session: AsyncSession, chunks: list[dict]) -> None:
     from app.db.models import KnowledgeChunk
 
     logger.info("Loading embedding model", model=settings.embedding_model)
-    embed_model = SentenceTransformer(settings.embedding_model)
+    embed_model = SentenceTransformer(settings.embedding_model, device="cpu")
 
     logger.info("Computing embeddings", count=len(chunks))
     texts = [c["content"] for c in chunks]

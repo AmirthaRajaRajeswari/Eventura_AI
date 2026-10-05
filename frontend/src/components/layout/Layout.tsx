@@ -4,15 +4,16 @@ import TopNav from "./TopNav";
 
 export default function Layout() {
   return (
-    <div className="flex h-screen overflow-hidden bg-background">
-      {/* Left sidebar */}
+    <div className="flex h-screen overflow-hidden bg-[#f8f5ef] text-[#2b2030]">
       <Sidebar />
 
-      {/* Main content area */}
-      <div className="flex flex-1 flex-col overflow-hidden">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <TopNav />
-        <main className="flex-1 overflow-y-auto p-6">
-          <Outlet />
+
+        <main className="min-w-0 flex-1 overflow-y-auto">
+          <div className="min-h-full">
+            <Outlet />
+          </div>
         </main>
       </div>
     </div>

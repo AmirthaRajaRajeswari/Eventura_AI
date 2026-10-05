@@ -128,6 +128,11 @@ async def intake_node(state: EventState, config: RunnableConfig) -> dict:
 
     new_req = _merge_requirements(existing, extracted, is_update)
 
+    # Deterministically validate explicitly stated budget
+    explicit_budget = _extract_budget_from_text(latest_msg)
+    if explicit_budget is not None:
+        new_req["budget"] = explicit_budget
+
     # Normalise values
     new_req = _normalise_requirements(new_req)
 
@@ -171,6 +176,11 @@ async def intake_node(state: EventState, config: RunnableConfig) -> dict:
     if is_update and requirements_complete:
         updates["status"] = "replanning"
 
+    print(
+    f"[DEBUG Intake] requirements_complete={requirements_complete}, "
+    f"missing_fields={missing}, "
+    f"updates_keys={list(updates.keys())}")
+
     return updates
 
 
@@ -193,6 +203,50 @@ def _merge_requirements(
                 merged[key] = value
     return merged
 
+def _extract_budget_from_text(text: str) -> float | None:
+    """
+    Deterministically extract an explicitly stated INR budget from user text.
+
+    Handles:
+      ₹8,00,000
+      8,00,000
+      ₹8 lakh / 8 lakhs
+      ₹5L / 5L
+      1.5 crore
+    """
+    if not text:
+        return None
+
+    text_lower = text.lower()
+
+    # Indian-number format: ₹8,00,000 or 8,00,000
+    match = re.search(
+        r"(?:₹|rs\.?|inr)?\s*([\d]{1,3}(?:,\d{2,3})+)",
+        text_lower,
+    )
+    if match:
+        try:
+            return float(match.group(1).replace(",", ""))
+        except ValueError:
+            pass
+
+    # Lakh / lakhs / L
+    match = re.search(
+        r"(?:₹|rs\.?|inr)?\s*(\d+(?:\.\d+)?)\s*(?:lakh|lakhs|l)\b",
+        text_lower,
+    )
+    if match:
+        return float(match.group(1)) * 100_000
+
+    # Crore / crores / Cr
+    match = re.search(
+        r"(?:₹|rs\.?|inr)?\s*(\d+(?:\.\d+)?)\s*(?:crore|crores|cr)\b",
+        text_lower,
+    )
+    if match:
+        return float(match.group(1)) * 10_000_000
+
+    return None
 
 def _normalise_requirements(req: dict) -> dict:
     """Clean up and normalise extracted values."""

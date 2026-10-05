@@ -103,16 +103,18 @@ async def human_review_node(state: EventState, config: RunnableConfig) -> dict:
     elif action == "modify":
         # Update requirements if modifications provided
         updates: dict = {
-            "human_feedback": all_feedback,
-            "rejected_vendor_ids": all_rejected,
-            "awaiting_human": False,
-            "hitl_gate": None,
-            "status": "replanning",
+        "human_feedback": all_feedback,
+        "rejected_vendor_ids": all_rejected,
+        "awaiting_human": False,
+        "hitl_gate": None,
+        "status": "replanning",
+        "critic_iterations": 0,
         }
         if modifications.get("budget"):
             req = dict(state.get("requirements", {}))
             req["budget"] = float(modifications["budget"])
             updates["requirements"] = req
+            updates["feasibility"] = {}
         return updates
 
     elif action == "reject_vendor":
@@ -124,12 +126,13 @@ async def human_review_node(state: EventState, config: RunnableConfig) -> dict:
                 if sel.get("vendor_id") == vid:
                     replan_categories.append(sel.get("category"))
         return {
-            "human_feedback": all_feedback,
-            "rejected_vendor_ids": all_rejected,
-            "awaiting_human": False,
-            "hitl_gate": None,
-            "status": "replanning",
-            "replan_categories": list(set(replan_categories)),
+        "human_feedback": all_feedback,
+        "rejected_vendor_ids": all_rejected,
+        "awaiting_human": False,
+        "hitl_gate": None,
+        "status": "replanning",
+        "replan_categories": list(set(replan_categories)),
+        "critic_iterations": 0,
         }
 
     # Default: treat unknown actions as approve

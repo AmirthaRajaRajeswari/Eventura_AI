@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from app.config import settings
 from app.logger import configure_logging, get_logger
@@ -27,11 +28,32 @@ async def lifespan(app: FastAPI):
         llm_provider=settings.llm_provider,
         rag_mode="agentic",
     )
+
     from app.llm.observability import setup_observability
     setup_observability()
-    yield
-    logger.info("Eventura AI shutting down")
 
+    from app.graph.graph import initialize_graph
+
+    # LangGraph PostgreSQL checkpointer
+    postgres_url = (
+        "postgresql://eventura:eventura@localhost:5433/eventura"
+    )
+
+    async with AsyncPostgresSaver.from_conn_string(
+        postgres_url
+    ) as checkpointer:
+
+        await checkpointer.setup()
+
+        initialize_graph(checkpointer)
+
+        logger.info(
+            "LangGraph PostgreSQL checkpointer initialized"
+        )
+
+        yield
+
+    logger.info("Eventura AI shutting down")
 
 app = FastAPI(
     title="Eventura AI",

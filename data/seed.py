@@ -450,11 +450,21 @@ def generate_vendors() -> list[dict]:
     for tmpl in VENDOR_TEMPLATES:
         names_used = set()
         # Limit to 5 cities per template to keep total around 90-100
-        sampled_cities = random.sample(CITIES, min(5, len(CITIES)))
+        sampled_cities = [CITIES[0]] + random.sample(CITIES[1:], min(4, len(CITIES) - 1))
 
         for city, state in sampled_cities:
             # Only 1 vendor per city per template to control total count
-            for name_tmpl in random.sample(tmpl["name_templates"], min(1, len(tmpl["name_templates"]))):
+            vendor_count = 3 if city == "Chennai" and tmpl["category"] in {
+                "venue",
+                "decoration",
+                "photography",
+                "catering",
+            } else 1
+
+            for name_tmpl in random.sample(
+                tmpl["name_templates"],
+                min(vendor_count, len(tmpl["name_templates"]))
+            ):
                 name = name_tmpl.replace("{city}", city)
                 if name in names_used:
                     continue

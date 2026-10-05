@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 class CreateSessionRequest(BaseModel):
     prompt: str = Field(..., min_length=5, description="Natural language event description")
     rag_mode: Literal["none", "basic", "agentic"] = "agentic"
-    llm_provider: Literal["gemini", "groq", "ollama"] = "gemini"
+    llm_provider: Literal["gemini", "groq", "ollama"] = "ollama"
 
 
 class SendMessageRequest(BaseModel):

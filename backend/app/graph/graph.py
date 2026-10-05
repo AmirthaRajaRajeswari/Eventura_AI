@@ -2,19 +2,38 @@
 Main LangGraph event planning graph for Eventura AI.
 
 Graph topology:
-  intake → feasibility → planner → research → budget → negotiator
-         → critic → [replanning loop] → human_review → booking → END
+
+    intake → feasibility → planner → research → budget → negotiator
+                                      ↓
+                                    critic
+                                      ↓
+                           ┌──────────┴──────────┐
+                           │                     │
+                      re-plan                  HITL
+                           │                     │
+                           └──── planner     ┌───┴────┐
+                                             │        │
+                                        modify/     approve
+                                        reject        │
+                                             │        ↓
+                                        feasibility booking → END
 
 HITL is implemented with LangGraph interrupt() inside human_review_node.
-The graph checkpoints state to PostgreSQL via AsyncSqliteSaver (dev) or
-langgraph-checkpoint-postgres (prod).
 
-Conditional edges:
-  - feasibility_router: feasible → planner | infeasible → END
-  - critic_router:      passed → human_review | failed + iterations < 2 → planner | else → human_review
-  - human_router:       approve → booking | modify/reject → planner
-  - intake_router:      complete → feasibility | needs_info → END (wait)
-  - replan_router:      disruption replan uses partial planner
+Conditional routing:
+  - intake_router:
+        complete → feasibility
+        needs_info → END
+
+  - critic_router:
+        passed → human_review
+        failed + iterations < 2 → planner
+        failed + iterations >= 2 → human_review
+
+  - human_router:
+        approve → booking
+        modify/reject → feasibility
+        researching → planner
 """
 
 from __future__ import annotations
@@ -34,62 +53,97 @@ from app.graph.nodes.research import research_node
 from app.graph.state import EventState
 from app.logger import get_logger
 
+
 logger = get_logger(__name__)
 
 
-# ── Conditional routing functions ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Conditional routing functions
+# ─────────────────────────────────────────────────────────────────────────────
 
 def intake_router(state: EventState) -> str:
-    """Route after intake: proceed if requirements complete, else wait."""
+    """
+    Route after intake.
+
+    If all critical requirements are available, continue to feasibility.
+    Otherwise stop and wait for the user to provide missing information.
+    """
     if state.get("requirements_complete"):
         return "feasibility"
-    return END  # Wait for user to provide missing fields
 
-
-def feasibility_router(state: EventState) -> str:
-    """Route after feasibility check."""
-    feasibility = state.get("feasibility", {})
-    if feasibility.get("feasible", False):
-        return "planner"
-    return END  # Infeasible — stop and inform user
+    return END
 
 
 def critic_router(state: EventState) -> str:
-    """Route after critic evaluation."""
+    """
+    Route after critic evaluation.
+
+    Passed:
+        → human_review
+
+    Failed with fewer than 2 iterations:
+        → planner for another correction cycle
+
+    Failed after maximum iterations:
+        → human_review with warnings
+    """
     feedback_list = state.get("critic_feedback", [])
+
     if not feedback_list:
         return "human_review"
 
     last_feedback = feedback_list[-1]
+
     passed = last_feedback.get("passed", False)
     iterations = state.get("critic_iterations", 0)
 
     if passed:
         return "human_review"
-    elif iterations < 2:
-        # Re-route to planner for correction
+
+    if iterations < 2:
         return "planner"
-    else:
-        # Max iterations — proceed anyway with warnings
-        return "human_review"
+
+    # Maximum autonomous critic iterations reached.
+    # Human gets the final decision.
+    return "human_review"
 
 
 def human_router(state: EventState) -> str:
-    """Route after human review."""
+    """
+    Route after human review.
+
+    approve:
+        → booking
+
+    modify/reject:
+        → feasibility
+
+    researching:
+        → planner
+
+    The feasibility step is intentionally repeated after a human
+    modification/rejection because the requirements or vendor constraints
+    may have changed. This prevents stale feasibility information from
+    being reused.
+    """
     status = state.get("status", "")
+
     if status == "booking":
         return "booking"
-    elif status in ("replanning", "researching"):
+
+    if status == "replanning":
+        return "feasibility"
+
+    if status == "researching":
         return "planner"
-    return "booking"  # default
+
+    # Default behavior is approval/booking.
+    return "booking"
 
 
-def post_booking_router(state: EventState) -> str:
-    """After booking, go to END (run-of-show and invitations are separate flows)."""
-    return END
-
-
-# ── Build the graph ───────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Graph construction
+# ─────────────────────────────────────────────────────────────────────────────
 
 def build_graph(checkpointer=None) -> StateGraph:
     """
@@ -98,16 +152,23 @@ def build_graph(checkpointer=None) -> StateGraph:
     Parameters
     ----------
     checkpointer:
-        LangGraph checkpointer for state persistence.
-        Defaults to MemorySaver (in-memory, for development).
-        Pass AsyncPostgresSaver for production.
+        LangGraph checkpointer used for state persistence.
+
+        Defaults to MemorySaver for development/testing.
+
+        A PostgreSQL-backed checkpointer can be supplied later for
+        persistent production deployments.
     """
+
     if checkpointer is None:
         checkpointer = MemorySaver()
 
     graph = StateGraph(EventState)
 
-    # ── Add nodes ─────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
+    # Nodes
+    # ─────────────────────────────────────────────────────────────────────
+
     graph.add_node("intake", intake_node)
     graph.add_node("feasibility", feasibility_node)
     graph.add_node("planner", planner_node)
@@ -118,37 +179,59 @@ def build_graph(checkpointer=None) -> StateGraph:
     graph.add_node("human_review", human_review_node)
     graph.add_node("booking", booking_node)
 
-    # ── Entry point ───────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
+    # Entry point
+    # ─────────────────────────────────────────────────────────────────────
+
     graph.set_entry_point("intake")
 
-    # ── Edges ─────────────────────────────────────────────────────────────
-    # Intake → feasibility or wait
+    # ─────────────────────────────────────────────────────────────────────
+    # Intake → Feasibility or END
+    # ─────────────────────────────────────────────────────────────────────
+
     graph.add_conditional_edges(
         "intake",
         intake_router,
-        {"feasibility": "feasibility", END: END},
+        {
+            "feasibility": "feasibility",
+            END: END,
+        },
     )
 
-    # Feasibility → planner or stop
-    graph.add_conditional_edges(
-        "feasibility",
-        feasibility_router,
-        {"planner": "planner", END: END},
-    )
+    # ─────────────────────────────────────────────────────────────────────
+    # Feasibility → Planner
+    # ─────────────────────────────────────────────────────────────────────
 
-    # Planner → research (always)
+    graph.add_edge("feasibility", "planner")
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Planner → Research
+    # ─────────────────────────────────────────────────────────────────────
+
     graph.add_edge("planner", "research")
 
-    # Research → budget
+    # ─────────────────────────────────────────────────────────────────────
+    # Research → Budget
+    # ─────────────────────────────────────────────────────────────────────
+
     graph.add_edge("research", "budget")
 
-    # Budget → negotiator
+    # ─────────────────────────────────────────────────────────────────────
+    # Budget → Negotiator
+    # ─────────────────────────────────────────────────────────────────────
+
     graph.add_edge("budget", "negotiator")
 
-    # Negotiator → critic
+    # ─────────────────────────────────────────────────────────────────────
+    # Negotiator → Critic
+    # ─────────────────────────────────────────────────────────────────────
+
     graph.add_edge("negotiator", "critic")
 
-    # Critic → human_review or re-plan
+    # ─────────────────────────────────────────────────────────────────────
+    # Critic → Planner or Human Review
+    # ─────────────────────────────────────────────────────────────────────
+
     graph.add_conditional_edges(
         "critic",
         critic_router,
@@ -158,31 +241,65 @@ def build_graph(checkpointer=None) -> StateGraph:
         },
     )
 
-    # Human review → booking or re-plan
+    # ─────────────────────────────────────────────────────────────────────
+    # Human Review → Booking / Feasibility / Planner
+    #
+    # IMPORTANT:
+    # There must be ONLY ONE conditional-edge registration for
+    # "human_review" using human_router.
+    # ─────────────────────────────────────────────────────────────────────
+
     graph.add_conditional_edges(
         "human_review",
         human_router,
         {
             "booking": "booking",
+            "feasibility": "feasibility",
             "planner": "planner",
         },
     )
 
+    # ─────────────────────────────────────────────────────────────────────
     # Booking → END
+    # ─────────────────────────────────────────────────────────────────────
+
     graph.add_edge("booking", END)
 
-    return graph.compile(checkpointer=checkpointer, interrupt_before=["human_review"])
+    return graph.compile(checkpointer=checkpointer)
 
 
-# Module-level default graph (MemorySaver for dev/testing)
+# ─────────────────────────────────────────────────────────────────────────────
+# Module-level default graph
+# ─────────────────────────────────────────────────────────────────────────────
+
 _default_graph = None
 
 
-def get_graph(checkpointer=None):
-    """Get the compiled graph, creating it if needed."""
+def initialize_graph(checkpointer) -> None:
+    """
+    Initialize the application's shared graph with a persistent checkpointer.
+    Called once during FastAPI startup.
+    """
     global _default_graph
+
+    _default_graph = build_graph(checkpointer=checkpointer)
+
+
+def get_graph(checkpointer=None):
+    """
+    Get the compiled application graph.
+
+    A custom checkpointer creates a new graph.
+    Otherwise, return the shared application graph.
+    """
+    global _default_graph
+
     if checkpointer is not None:
         return build_graph(checkpointer=checkpointer)
+
     if _default_graph is None:
+        # Development fallback.
+        # Normally initialize_graph() is called during application startup.
         _default_graph = build_graph()
+
     return _default_graph

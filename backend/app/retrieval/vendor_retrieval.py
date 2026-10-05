@@ -2,19 +2,20 @@
 SQL-based vendor retrieval for Eventura AI.
 
 All vendor lookups go through deterministic SQL queries.
+
 The LLM is never asked to find or select vendors — it only explains results.
 
 Retrieval modes:
+
   - Direct SQL with explicit filters (city, category, capacity, price, date)
+  - Exclusion of previously rejected vendors
   - Returns structured VendorResult objects with evidence IDs attached
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
-
-from sqlalchemy import and_, select, text
+from dataclasses import dataclass
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Vendor, VendorAvailability
@@ -27,6 +28,7 @@ logger = get_logger(__name__)
 @dataclass
 class VendorResult:
     """A vendor returned by retrieval with full pricing and evidence."""
+
     vendor_id: str
     name: str
     category: str
@@ -42,11 +44,15 @@ class VendorResult:
     is_available: bool
     evidence: Evidence
 
-    def estimated_price(self, guest_count: int | None, duration_days: int = 1) -> float:
+    def estimated_price(
+        self,
+        guest_count: int | None,
+        duration_days: int = 1,
+    ) -> float:
         """
         Deterministic price estimate — no LLM arithmetic.
-        Returns total estimated cost for the event.
         """
+
         if self.price_per_guest and guest_count:
             base = self.price_per_guest * guest_count
         else:
@@ -89,33 +95,19 @@ async def retrieve_vendors(
     max_price: float | None = None,
     retrieval_round: int = 0,
     limit: int = 10,
+    rejected_vendor_ids: list[str] | None = None,
 ) -> list[VendorResult]:
     """
     Retrieve vendors matching structured filters via SQL.
 
-    Parameters
-    ----------
-    db:
-        Async SQLAlchemy session.
-    session_id:
-        Used for evidence ID scoping.
-    category:
-        Vendor category (e.g. "venue", "catering").
-    event_type:
-        Event type filter (e.g. "wedding").
-    city:
-        City name (partial match).
-    date:
-        ISO date string for availability check.
-    min_capacity:
-        Minimum guest capacity required.
-    max_price:
-        Maximum acceptable base price.
-    retrieval_round:
-        0 = initial, 1-2 = re-retrieval rounds.
-    limit:
-        Maximum number of results.
+    rejected_vendor_ids:
+        Vendor IDs that were rejected by the Critic/Planner.
+        These vendors are excluded directly at the SQL layer so
+        Agentic RAG cannot retrieve them again.
     """
+
+    rejected_vendor_ids = rejected_vendor_ids or []
+
     logger.debug(
         "SQL vendor retrieval",
         category=category,
@@ -124,10 +116,13 @@ async def retrieve_vendors(
         date=date,
         min_capacity=min_capacity,
         max_price=max_price,
-        round=retrieval_round,
+        retrieval_round=retrieval_round,
+        rejected_vendor_count=len(rejected_vendor_ids),
     )
 
-    # Build query
+    # ------------------------------------------------------------------
+    # Build base query
+    # ------------------------------------------------------------------
     q = (
         select(Vendor)
         .where(Vendor.is_active == True)
@@ -136,18 +131,36 @@ async def retrieve_vendors(
         .where(Vendor.event_types.any(event_type))
     )
 
+    # ------------------------------------------------------------------
+    # CRITICAL:
+    # Never retrieve vendors explicitly rejected during replanning.
+    # ------------------------------------------------------------------
+    if rejected_vendor_ids:
+        q = q.where(
+            Vendor.id.not_in(rejected_vendor_ids)
+        )
+
+    # ------------------------------------------------------------------
+    # Capacity filter
+    # ------------------------------------------------------------------
     if min_capacity is not None:
         q = q.where(
-            (Vendor.max_capacity.is_(None)) | (Vendor.max_capacity >= min_capacity)
+            (Vendor.max_capacity.is_(None))
+            | (Vendor.max_capacity >= min_capacity)
         )
 
+    # ------------------------------------------------------------------
+    # Price filter
+    # ------------------------------------------------------------------
     if max_price is not None:
-        # For per-guest vendors, can't filter by base_price alone — include them
         q = q.where(
-            (Vendor.base_price <= max_price) | (Vendor.price_per_guest.isnot(None))
+            (Vendor.base_price <= max_price)
+            | (Vendor.price_per_guest.isnot(None))
         )
 
+    # ------------------------------------------------------------------
     # Exclude vendors unavailable on requested date
+    # ------------------------------------------------------------------
     if date:
         unavailable_subq = (
             select(VendorAvailability.vendor_id)
@@ -159,20 +172,36 @@ async def retrieve_vendors(
             )
             .scalar_subquery()
         )
-        q = q.where(Vendor.id.not_in(unavailable_subq))
 
-    # Order by rating descending
-    q = q.order_by(Vendor.rating.desc()).limit(limit)
+        q = q.where(
+            Vendor.id.not_in(unavailable_subq)
+        )
+
+    # ------------------------------------------------------------------
+    # Highest-rated vendors first
+    # ------------------------------------------------------------------
+    q = (
+        q.order_by(Vendor.rating.desc())
+        .limit(limit)
+    )
 
     result = await db.execute(q)
     vendors = result.scalars().all()
 
-    logger.debug("SQL vendor retrieval results", count=len(vendors))
+    logger.debug(
+        "SQL vendor retrieval results",
+        count=len(vendors),
+    )
 
     results: list[VendorResult] = []
+
     for vendor in vendors:
+
+        # --------------------------------------------------------------
         # Check specific-date availability
+        # --------------------------------------------------------------
         is_available = True
+
         if date:
             avail_result = await db.execute(
                 select(VendorAvailability).where(
@@ -182,13 +211,23 @@ async def retrieve_vendors(
                     )
                 )
             )
-            avail = avail_result.scalar_one_or_none()
-            is_available = avail.is_available if avail else True
 
-        # Build evidence content summary
+            avail = avail_result.scalar_one_or_none()
+
+            is_available = (
+                avail.is_available
+                if avail
+                else True
+            )
+
+        # --------------------------------------------------------------
+        # Evidence summary
+        # --------------------------------------------------------------
         content_summary = (
-            f"Vendor: {vendor.name} | Category: {vendor.category} | "
-            f"City: {vendor.city} | Rating: {vendor.rating} | "
+            f"Vendor: {vendor.name} | "
+            f"Category: {vendor.category} | "
+            f"City: {vendor.city} | "
+            f"Rating: {vendor.rating} | "
             f"Base price: INR{vendor.base_price:,.0f} | "
             f"Price floor: INR{vendor.price_floor:,.0f} | "
             f"Capacity: {vendor.min_capacity}-{vendor.max_capacity} | "
@@ -196,9 +235,29 @@ async def retrieve_vendors(
         )
 
         query_str = (
-            f"category={category} city={city} event_type={event_type}"
-            + (f" date={date}" if date else "")
-            + (f" min_capacity={min_capacity}" if min_capacity else "")
+            f"category={category} "
+            f"city={city} "
+            f"event_type={event_type}"
+            + (
+                f" date={date}"
+                if date
+                else ""
+            )
+            + (
+                f" min_capacity={min_capacity}"
+                if min_capacity
+                else ""
+            )
+            + (
+                f" max_price={max_price}"
+                if max_price
+                else ""
+            )
+            + (
+                f" excluded_vendor_ids={rejected_vendor_ids}"
+                if rejected_vendor_ids
+                else ""
+            )
         )
 
         evidence = make_evidence(
@@ -247,8 +306,10 @@ async def get_cheapest_vendor(
 ) -> VendorResult | None:
     """
     Find the cheapest vendor for a category.
+
     Used by the Feasibility Agent for deterministic minimum cost calculation.
     """
+
     q = (
         select(Vendor)
         .where(Vendor.is_active == True)
@@ -266,15 +327,27 @@ async def get_cheapest_vendor(
     def effective_cost(v: Vendor) -> float:
         if v.price_per_guest and guest_count:
             return v.price_per_guest * guest_count
-        return v.base_price if v.base_price > 0 else float("inf")
 
-    cheapest = min(vendors, key=effective_cost)
+        return (
+            v.base_price
+            if v.base_price > 0
+            else float("inf")
+        )
+
+    cheapest = min(
+        vendors,
+        key=effective_cost,
+    )
 
     evidence = make_evidence(
         session_id="feasibility",
         source_type="vendor_sql",
         source_ref=cheapest.id,
-        content=f"Cheapest {category}: {cheapest.name} at INR{effective_cost(cheapest):,.0f}",
+        content=(
+            f"Cheapest {category}: "
+            f"{cheapest.name} at "
+            f"INR{effective_cost(cheapest):,.0f}"
+        ),
         score=1.0,
         query=f"cheapest {category} in {city} for {event_type}",
     )

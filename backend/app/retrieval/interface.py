@@ -35,6 +35,7 @@ async def retrieve(
     retrieval_round: int = 0,
     existing_evidence: list[Evidence] | None = None,
     llm: Any = None,
+    rejected_vendor_ids: list[str] | None = None,
 ) -> RetrievalResult:
     """
     Dispatch to the appropriate retrieval mode.
@@ -88,6 +89,7 @@ async def retrieve(
             retrieval_round=retrieval_round,
             existing_evidence=existing_evidence,
             llm=llm,
+            rejected_vendor_ids=rejected_vendor_ids,
         )
 
     else:
